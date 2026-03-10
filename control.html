@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Bridge Control</title></head>
+<body>
+  <h3>Page Control Bridge</h3>
+  <button id="status">status</button>
+  <button id="content">content</button>
+  <button id="next">next page</button>
+  <input id="url" placeholder="https://example.com" style="width:320px" />
+  <button id="open">open</button>
+  <pre id="out" style="white-space:pre-wrap"></pre>
+<script>
+async function call(cmd, params={}) {
+  const res = await browser.runtime.sendMessage({cmd, params});
+  document.getElementById('out').textContent = JSON.stringify(res, null, 2);
+}
+document.getElementById('status').onclick = () => call('status');
+document.getElementById('content').onclick = () => call('content');
+document.getElementById('next').onclick = () => call('next');
+document.getElementById('open').onclick = () => call('open', {url: document.getElementById('url').value});
+</script>
+</body></html>

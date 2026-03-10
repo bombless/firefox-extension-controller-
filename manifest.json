@@ -1,0 +1,25 @@
+{
+  "manifest_version": 2,
+  "name": "Page Control Bridge",
+  "version": "1.0.0",
+  "description": "Expose current tab content and basic actions via local HTTP.",
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "<all_urls>",
+    "http://127.0.0.1:9230/*",
+    "http://localhost:9230/*"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": true
+  },
+  "browser_action": {
+    "default_title": "Page Control Bridge",
+    "default_popup": "control.html"
+  },
+  "options_ui": {
+    "page": "control.html",
+    "open_in_tab": true
+  }
+}
