@@ -3,6 +3,7 @@
 const BRIDGE = 'http://127.0.0.1:9230';
 const TARGET_PREFIX = 'https://we.51job.com/pc/search?';
 const BUTTON_ID = '__we51job_capture_btn__';
+const BUTTON_NEXT_ID = '__we51job_capture_next_btn__';
 
 const CAPTURE_SCRIPT = `(() => {
   const cleanText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
@@ -258,69 +259,229 @@ function isTargetPage(url) {
 
 async function injectCaptureButton(tabId) {
   const script = `(() => {
-    const id = ${JSON.stringify(BUTTON_ID)};
-    if (document.getElementById(id)) return;
+    const captureId = ${JSON.stringify(BUTTON_ID)};
+    const nextId = ${JSON.stringify(BUTTON_NEXT_ID)};
+    const runtime = (typeof browser !== 'undefined' && browser.runtime)
+      || (typeof chrome !== 'undefined' && chrome.runtime)
+      || null;
+    if (!runtime || !runtime.sendMessage) return;
 
-    const btn = document.createElement('button');
-    btn.id = id;
-    btn.textContent = '抓取';
-    btn.type = 'button';
-    btn.title = '抓取功能开发中';
-    btn.style.position = 'fixed';
-    btn.style.top = '12px';
-    btn.style.left = '12px';
-    btn.style.zIndex = '2147483647';
-    btn.style.padding = '8px 14px';
-    btn.style.border = '1px solid #1677ff';
-    btn.style.borderRadius = '6px';
-    btn.style.background = '#1677ff';
-    btn.style.color = '#fff';
-    btn.style.fontSize = '14px';
-    btn.style.lineHeight = '1';
-    btn.style.cursor = 'pointer';
-    btn.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.2)';
-    btn.style.fontFamily = 'sans-serif';
+    const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+    const cleanText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
 
-    btn.addEventListener('click', async (event) => {
-      event.preventDefault();
-      event.stopPropagation();
+    const applyBaseStyle = (button, left, background, borderColor) => {
+      button.type = 'button';
+      button.style.position = 'fixed';
+      button.style.top = '12px';
+      button.style.left = left;
+      button.style.zIndex = '2147483647';
+      button.style.padding = '8px 14px';
+      button.style.border = '1px solid ' + borderColor;
+      button.style.borderRadius = '6px';
+      button.style.background = background;
+      button.style.color = '#fff';
+      button.style.fontSize = '14px';
+      button.style.lineHeight = '1';
+      button.style.cursor = 'pointer';
+      button.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.2)';
+      button.style.fontFamily = 'sans-serif';
+    };
 
-      const runtime = (typeof browser !== 'undefined' && browser.runtime)
-        || (typeof chrome !== 'undefined' && chrome.runtime)
-        || null;
-      if (!runtime || !runtime.sendMessage) return;
-      if (btn.dataset.loading === '1') return;
-
-      const originalText = btn.textContent;
-      btn.dataset.loading = '1';
-      btn.disabled = true;
-      btn.style.opacity = '0.85';
-      btn.textContent = '抓取中...';
-
+    const runCapture = async (button, originalText) => {
       try {
         const result = await runtime.sendMessage({ cmd: 'capture' });
         if (result && result.ok) {
           const count = typeof result.total === 'number' ? result.total : '-';
           const added = typeof result.inserted === 'number' ? result.inserted : '-';
-          btn.textContent = '已抓取 +' + added + ' / 总' + count;
+          button.textContent = '已抓取 +' + added + ' / 总' + count;
         } else {
-          btn.textContent = '抓取失败';
+          button.textContent = '抓取失败';
           console.error('[Page Control Bridge] capture failed', result);
         }
       } catch (error) {
-        btn.textContent = '抓取异常';
+        button.textContent = '抓取异常';
         console.error('[Page Control Bridge] capture error', error);
       } finally {
         window.setTimeout(() => {
-          btn.dataset.loading = '0';
-          btn.disabled = false;
-          btn.style.opacity = '1';
-          btn.textContent = originalText;
+          button.dataset.loading = '0';
+          button.disabled = false;
+          button.style.opacity = '1';
+          button.textContent = originalText;
         }, 1500);
       }
-    });
+    };
 
-    document.body.appendChild(btn);
+    const getActivePageNo = () => {
+      const candidates = [
+        '.el-pager li.active',
+        '.el-pagination .el-pager li.active',
+        '.pagination .active',
+        '[aria-current="page"]',
+        '[class*="pager"] .active'
+      ];
+      for (const selector of candidates) {
+        const node = document.querySelector(selector);
+        if (!node) continue;
+        const text = cleanText(node.textContent);
+        const matched = text.match(/\\d+/);
+        if (matched) return Number.parseInt(matched[0], 10);
+      }
+      return null;
+    };
+
+    const getListMarker = () => {
+      const node = document.querySelector('.joblist-item [sensorsdata], .joblist-item .jname');
+      if (!node) return '';
+      return cleanText(node.getAttribute?.('sensorsdata') || node.textContent || '');
+    };
+
+    const getPageNumberNodes = () => {
+      return Array.from(document.querySelectorAll(
+        '.el-pager li, .el-pagination .el-pager li, .pagination li, [class*="pager"] li, [class*="pagination"] li'
+      ));
+    };
+
+    const isDisabled = (node) => {
+      const className = String(node.className || '').toLowerCase();
+      return node.getAttribute('disabled') !== null ||
+        node.getAttribute('aria-disabled') === 'true' ||
+        className.includes('disabled');
+    };
+
+    const findPageNodeByNumber = (targetPageNo) => {
+      const nodes = getPageNumberNodes();
+      for (const node of nodes) {
+        if (!node || isDisabled(node)) continue;
+        const text = cleanText(node.textContent);
+        const matched = text.match(/^\\d+$/);
+        if (!matched) continue;
+        if (Number.parseInt(matched[0], 10) === targetPageNo) {
+          return node;
+        }
+      }
+      return null;
+    };
+
+    const findNextButton = () => {
+      const selector = '.btn-next, .el-pagination .btn-next, [class*="next"]';
+      const nodes = Array.from(document.querySelectorAll(selector));
+      for (const node of nodes) {
+        if (!node || isDisabled(node)) continue;
+        const className = String(node.className || '').toLowerCase();
+        const text = cleanText(node.textContent || node.getAttribute('aria-label') || '');
+        if (text.includes('下一页') || className.includes('next')) return node;
+      }
+      return null;
+    };
+
+    const clickNode = (node) => {
+      if (!node) return false;
+      node.dispatchEvent(new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        view: window
+      }));
+      if (typeof node.click === 'function') node.click();
+      return true;
+    };
+
+    const waitForNextPageLoaded = async (oldPageNo, timeoutMs = 12000) => {
+      const started = Date.now();
+      const markerBefore = getListMarker();
+      while (Date.now() - started < timeoutMs) {
+        await sleep(240);
+        const currentPageNo = getActivePageNo();
+        if (Number.isFinite(oldPageNo) && Number.isFinite(currentPageNo) && currentPageNo > oldPageNo) {
+          return true;
+        }
+        const markerNow = getListMarker();
+        if (markerBefore && markerNow && markerNow !== markerBefore) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const gotoNextPage = async () => {
+      const currentPageNo = getActivePageNo();
+      const targetPageNo = Number.isFinite(currentPageNo) ? (currentPageNo + 1) : 2;
+
+      let targetNode = findPageNodeByNumber(targetPageNo);
+      if (!targetNode && !Number.isFinite(currentPageNo)) {
+        targetNode = findPageNodeByNumber(2);
+      }
+      if (!targetNode) {
+        targetNode = findNextButton();
+      }
+      if (!targetNode) return { ok: false, error: 'next page node not found' };
+
+      clickNode(targetNode);
+      const changed = await waitForNextPageLoaded(currentPageNo);
+      if (!changed) {
+        await sleep(1800);
+      }
+      return { ok: true };
+    };
+
+    let captureBtn = document.getElementById(captureId);
+    if (!captureBtn) {
+      captureBtn = document.createElement('button');
+      captureBtn.id = captureId;
+      captureBtn.textContent = '抓取';
+      captureBtn.title = '抓取当前页职位';
+      applyBaseStyle(captureBtn, '12px', '#1677ff', '#1677ff');
+      captureBtn.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (captureBtn.dataset.loading === '1') return;
+        const originalText = captureBtn.textContent;
+        captureBtn.dataset.loading = '1';
+        captureBtn.disabled = true;
+        captureBtn.style.opacity = '0.85';
+        captureBtn.textContent = '抓取中...';
+        await runCapture(captureBtn, originalText);
+      });
+      document.body.appendChild(captureBtn);
+    }
+
+    let nextBtn = document.getElementById(nextId);
+    if (!nextBtn) {
+      nextBtn = document.createElement('button');
+      nextBtn.id = nextId;
+      nextBtn.textContent = '抓取下一页';
+      nextBtn.title = '翻到下一页后抓取';
+      applyBaseStyle(nextBtn, '92px', '#2f9e44', '#2f9e44');
+      nextBtn.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (nextBtn.dataset.loading === '1') return;
+        const originalText = nextBtn.textContent;
+        nextBtn.dataset.loading = '1';
+        nextBtn.disabled = true;
+        nextBtn.style.opacity = '0.85';
+        nextBtn.textContent = '翻页中...';
+        try {
+          const moved = await gotoNextPage();
+          if (!moved.ok) {
+            nextBtn.textContent = '未找到下一页';
+            console.warn('[Page Control Bridge] next page not found', moved.error);
+            return;
+          }
+          nextBtn.textContent = '抓取中...';
+          await runCapture(nextBtn, originalText);
+        } finally {
+          if (nextBtn.dataset.loading === '1') {
+            window.setTimeout(() => {
+              nextBtn.dataset.loading = '0';
+              nextBtn.disabled = false;
+              nextBtn.style.opacity = '1';
+              nextBtn.textContent = originalText;
+            }, 1500);
+          }
+        }
+      });
+      document.body.appendChild(nextBtn);
+    }
   })();`;
 
   try {
