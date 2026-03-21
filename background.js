@@ -530,7 +530,16 @@ async function injectCaptureButton(tabId) {
       let successCount = 0;
       let stopReason = 'no-next';
       try {
-        for (let i = 0; i < 50; i += 1) {
+        // 先抓取当前页，再继续抓后续页。
+        batchBtn.textContent = '第1/50页';
+        const firstCapture = await runCapture(batchBtn);
+        if (!firstCapture.ok) {
+          stopReason = 'capture-failed';
+        } else {
+          successCount = 1;
+        }
+
+        for (let i = 1; i < 50 && stopReason !== 'capture-failed'; i += 1) {
           batchBtn.textContent = '第' + (i + 1) + '/50页';
           const step = await performNextPageCapture(batchBtn);
           if (!step.ok) {
@@ -545,7 +554,7 @@ async function injectCaptureButton(tabId) {
         if (successCount >= 50) {
           batchBtn.textContent = '已抓取50页';
         } else if (stopReason === 'no-next') {
-          batchBtn.textContent = '已到最后一页';
+          batchBtn.textContent = '已抓取' + successCount + '页(到最后一页)';
         } else {
           batchBtn.textContent = '抓取中断(' + successCount + ')';
         }
@@ -650,6 +659,7 @@ async function api(cmd, params = {}, context = {}) {
 
           records.push({
             url: jobUrl,
+            jobName,
             companyName,
             area,
             salaryRange
@@ -883,6 +893,7 @@ async function api(cmd, params = {}, context = {}) {
       }
       records = data.records.map((item) => ({
         url: item?.url || '',
+        jobName: item?.jobName || item?.jobTitle || '',
         companyName: item?.companyName || '',
         area: item?.area || '',
         salaryRange: item?.salaryRange || ''

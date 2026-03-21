@@ -42,6 +42,7 @@ function upsertRecords(records, meta = {}) {
     }
 
     const nextCompanyName = clean(item?.companyName || item?.company || '', 200);
+    const nextJobName = clean(item?.jobName || item?.jobTitle || item?.title || item?.positionName || '', 300);
     const nextArea = clean(item?.area || item?.jobArea || item?.city || '', 200);
     const nextSalaryRange = clean(item?.salaryRange || item?.salary || '', 120);
     const sourcePage = clean(item?.sourcePage || meta?.sourcePage || '', 500);
@@ -50,6 +51,7 @@ function upsertRecords(records, meta = {}) {
     if (!existing) {
       recordsByUrl.set(normalizedUrl, {
         url: normalizedUrl,
+        jobName: nextJobName,
         companyName: nextCompanyName,
         area: nextArea,
         salaryRange: nextSalaryRange,
@@ -66,6 +68,7 @@ function upsertRecords(records, meta = {}) {
 
     recordsByUrl.set(normalizedUrl, {
       url: normalizedUrl,
+      jobName: nextJobName || existing.jobName,
       companyName: nextCompanyName || existing.companyName,
       area: nextArea || existing.area,
       salaryRange: nextSalaryRange || existing.salaryRange,
@@ -147,6 +150,7 @@ const server = http.createServer(async (req, res) => {
       .sort((a, b) => String(b.lastCapturedAt).localeCompare(String(a.lastCapturedAt)))
       .map((item) => ({
         url: item.url,
+        jobName: item.jobName || '',
         companyName: item.companyName || '',
         area: item.area || '',
         salaryRange: item.salaryRange || ''
@@ -214,6 +218,6 @@ server.listen(PORT, () => {
   console.log(`Bridge server listening on http://127.0.0.1:${PORT}`);
   console.log('POST /call {cmd, params}');
   console.log('GET /status /content /html /dom /open?url=... /click?selector=... /eval?script=...');
-  console.log('POST /record {records:[{url,companyName,area,salaryRange}], sourcePage?}');
+  console.log('POST /record {records:[{url,jobName,companyName,area,salaryRange}], sourcePage?}');
   console.log('GET /record');
 });
