@@ -57,5 +57,5 @@ curl -s http://127.0.0.1:9230/record
 - 在 `we.51job.com/pc/search` 页面，`/content` 会优先返回结构化职位列表（`records`，每条含 `url/companyName/area/salaryRange`）。
 - 在 `https://we.51job.com/pc/search?` 页面会显示左上角“抓取”按钮。
 - 点击“抓取”后，扩展会解析当前页面职位信息并 `POST /record` 存入桥服务内存。
-- 记录字段：`companyName`、`jobName`、`salaryRange`、`url`（去掉 query/hash）。
+- 记录字段：`url`、`companyName`、`area`、`salaryRange`（`url` 去掉 query/hash）。
 - 去重键为 `url`（不含查询串）；服务进程重启后记录会清空。

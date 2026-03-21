@@ -625,9 +625,25 @@ async function api(cmd, params = {}, context = {}) {
   }
 
   if (cmd === 'capture') {
-    const data = await evalInTab(tab.id, CAPTURE_SCRIPT);
-    if (!data || !Array.isArray(data.records)) {
-      return { ok: false, error: 'capture parse failed' };
+    const contentResult = await api('content', {}, context);
+    let records = Array.isArray(contentResult?.records) ? contentResult.records : [];
+    let sourcePage = contentResult?.url || tab.url || '';
+    let sourceTitle = contentResult?.title || tab.title || '';
+
+    if (records.length === 0) {
+      // Fallback for pages that do not match the /content structured extractor.
+      const data = await evalInTab(tab.id, CAPTURE_SCRIPT);
+      if (!data || !Array.isArray(data.records)) {
+        return { ok: false, error: 'capture parse failed' };
+      }
+      records = data.records.map((item) => ({
+        url: item?.url || '',
+        companyName: item?.companyName || '',
+        area: item?.area || '',
+        salaryRange: item?.salaryRange || ''
+      }));
+      sourcePage = data.pageUrl || sourcePage;
+      sourceTitle = data.title || sourceTitle;
     }
 
     let bridgeResult;
@@ -636,9 +652,9 @@ async function api(cmd, params = {}, context = {}) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sourcePage: data.pageUrl || tab.url || '',
-          title: data.title || tab.title || '',
-          records: data.records
+          sourcePage,
+          title: sourceTitle,
+          records
         })
       });
       bridgeResult = await resp.json();
@@ -651,7 +667,7 @@ async function api(cmd, params = {}, context = {}) {
 
     return {
       ok: true,
-      captured: data.records.length,
+      captured: records.length,
       inserted: bridgeResult.inserted,
       updated: bridgeResult.updated,
       skipped: bridgeResult.skipped,

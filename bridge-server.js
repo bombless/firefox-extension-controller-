@@ -41,8 +41,8 @@ function upsertRecords(records, meta = {}) {
       continue;
     }
 
-    const nextJobName = clean(item?.jobName || item?.title || item?.positionName || '', 300);
     const nextCompanyName = clean(item?.companyName || item?.company || '', 200);
+    const nextArea = clean(item?.area || item?.jobArea || item?.city || '', 200);
     const nextSalaryRange = clean(item?.salaryRange || item?.salary || '', 120);
     const sourcePage = clean(item?.sourcePage || meta?.sourcePage || '', 500);
     const existing = recordsByUrl.get(normalizedUrl);
@@ -50,8 +50,8 @@ function upsertRecords(records, meta = {}) {
     if (!existing) {
       recordsByUrl.set(normalizedUrl, {
         url: normalizedUrl,
-        jobName: nextJobName,
         companyName: nextCompanyName,
+        area: nextArea,
         salaryRange: nextSalaryRange,
         sourcePages: sourcePage ? [sourcePage] : [],
         firstCapturedAt: now,
@@ -66,8 +66,8 @@ function upsertRecords(records, meta = {}) {
 
     recordsByUrl.set(normalizedUrl, {
       url: normalizedUrl,
-      jobName: nextJobName || existing.jobName,
       companyName: nextCompanyName || existing.companyName,
+      area: nextArea || existing.area,
       salaryRange: nextSalaryRange || existing.salaryRange,
       sourcePages: Array.from(mergedSourcePages).slice(-20),
       firstCapturedAt: existing.firstCapturedAt || now,
@@ -144,7 +144,13 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/record') {
     const records = Array.from(recordsByUrl.values())
-      .sort((a, b) => String(b.lastCapturedAt).localeCompare(String(a.lastCapturedAt)));
+      .sort((a, b) => String(b.lastCapturedAt).localeCompare(String(a.lastCapturedAt)))
+      .map((item) => ({
+        url: item.url,
+        companyName: item.companyName || '',
+        area: item.area || '',
+        salaryRange: item.salaryRange || ''
+      }));
     return send(res, 200, { ok: true, count: records.length, records });
   }
 
@@ -208,6 +214,6 @@ server.listen(PORT, () => {
   console.log(`Bridge server listening on http://127.0.0.1:${PORT}`);
   console.log('POST /call {cmd, params}');
   console.log('GET /status /content /html /dom /open?url=... /click?selector=... /eval?script=...');
-  console.log('POST /record {records:[{companyName,jobName,salaryRange,url}], sourcePage?}');
+  console.log('POST /record {records:[{url,companyName,area,salaryRange}], sourcePage?}');
   console.log('GET /record');
 });
