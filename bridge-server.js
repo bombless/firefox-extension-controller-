@@ -5,6 +5,84 @@ const { randomUUID } = require('crypto');
 const PORT = 9230;
 const queue = [];
 const waiting = new Map();
+const recordsByUrl = new Map();
+
+function normalizeRecordUrl(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return '';
+  try {
+    const u = new URL(raw.trim());
+    if (!/^https?:$/.test(u.protocol)) return '';
+    u.search = '';
+    u.hash = '';
+    return `${u.origin}${u.pathname}`;
+  } catch (_) {
+    return '';
+  }
+}
+
+function clean(value, max = 200) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.slice(0, max);
+}
+
+function upsertRecords(records, meta = {}) {
+  const list = Array.isArray(records) ? records : [];
+  const now = new Date().toISOString();
+  let inserted = 0;
+  let updated = 0;
+  let skipped = 0;
+
+  for (const item of list) {
+    const normalizedUrl = normalizeRecordUrl(
+      item?.url || item?.link || item?.href || ''
+    );
+    if (!normalizedUrl) {
+      skipped += 1;
+      continue;
+    }
+
+    const nextJobName = clean(item?.jobName || item?.title || item?.positionName || '', 300);
+    const nextCompanyName = clean(item?.companyName || item?.company || '', 200);
+    const nextSalaryRange = clean(item?.salaryRange || item?.salary || '', 120);
+    const sourcePage = clean(item?.sourcePage || meta?.sourcePage || '', 500);
+    const existing = recordsByUrl.get(normalizedUrl);
+
+    if (!existing) {
+      recordsByUrl.set(normalizedUrl, {
+        url: normalizedUrl,
+        jobName: nextJobName,
+        companyName: nextCompanyName,
+        salaryRange: nextSalaryRange,
+        sourcePages: sourcePage ? [sourcePage] : [],
+        firstCapturedAt: now,
+        lastCapturedAt: now
+      });
+      inserted += 1;
+      continue;
+    }
+
+    const mergedSourcePages = new Set(existing.sourcePages || []);
+    if (sourcePage) mergedSourcePages.add(sourcePage);
+
+    recordsByUrl.set(normalizedUrl, {
+      url: normalizedUrl,
+      jobName: nextJobName || existing.jobName,
+      companyName: nextCompanyName || existing.companyName,
+      salaryRange: nextSalaryRange || existing.salaryRange,
+      sourcePages: Array.from(mergedSourcePages).slice(-20),
+      firstCapturedAt: existing.firstCapturedAt || now,
+      lastCapturedAt: now
+    });
+    updated += 1;
+  }
+
+  return {
+    inserted,
+    updated,
+    skipped,
+    total: recordsByUrl.size
+  };
+}
 
 function send(res, code, obj) {
   res.writeHead(code, {
@@ -14,6 +92,16 @@ function send(res, code, obj) {
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
   });
   res.end(JSON.stringify(obj));
+}
+
+function sendHtml(res, code, html) {
+  res.writeHead(code, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+  });
+  res.end(String(html || ''));
 }
 
 function readJson(req) {
@@ -54,6 +142,20 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === '/health') return send(res, 200, { ok: true, queue: queue.length });
 
+  if (req.method === 'GET' && url.pathname === '/record') {
+    const records = Array.from(recordsByUrl.values())
+      .sort((a, b) => String(b.lastCapturedAt).localeCompare(String(a.lastCapturedAt)));
+    return send(res, 200, { ok: true, count: records.length, records });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/record') {
+    const body = await readJson(req);
+    const summary = upsertRecords(body.records, {
+      sourcePage: body.sourcePage || ''
+    });
+    return send(res, 200, { ok: true, ...summary });
+  }
+
   if (req.method === 'GET' && url.pathname === '/next-command') {
     const task = queue.shift() || null;
     return send(res, 200, task || {});
@@ -73,7 +175,25 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, { id, result });
   }
 
-  if (req.method === 'GET' && ['/status', '/content', '/open', '/click', '/eval'].includes(url.pathname)) {
+  if (req.method === 'GET' && url.pathname === '/html') {
+    const params = Object.fromEntries(url.searchParams.entries());
+    const id = enqueue('html', params);
+    const result = await waitResult(id, 15000);
+    if (result?.ok && typeof result.html === 'string') {
+      return sendHtml(res, 200, result.html);
+    }
+    return send(res, 502, { id, result });
+  }
+
+  if (req.method === 'GET' && url.pathname === '/content') {
+    const params = Object.fromEntries(url.searchParams.entries());
+    const id = enqueue('content', params);
+    const result = await waitResult(id, 15000);
+    if (result?.ok) return send(res, 200, result);
+    return send(res, 502, { id, result });
+  }
+
+  if (req.method === 'GET' && ['/status', '/dom', '/open', '/click', '/eval'].includes(url.pathname)) {
     const cmd = url.pathname.slice(1);
     const params = Object.fromEntries(url.searchParams.entries());
     const id = enqueue(cmd, params);
@@ -87,5 +207,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`Bridge server listening on http://127.0.0.1:${PORT}`);
   console.log('POST /call {cmd, params}');
-  console.log('GET /status /content /open?url=... /click?selector=... /eval?script=...');
+  console.log('GET /status /content /html /dom /open?url=... /click?selector=... /eval?script=...');
+  console.log('POST /record {records:[{companyName,jobName,salaryRange,url}], sourcePage?}');
+  console.log('GET /record');
 });
