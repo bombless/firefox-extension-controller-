@@ -55,8 +55,9 @@ curl -s http://127.0.0.1:9230/record
 - 扩展只提供原子能力：`status/content/html/dom/open/click/eval`。
 - “下一页判断”由 LLM 在外部完成。
 - 在 `we.51job.com/pc/search` 页面，`/content` 会优先返回结构化职位列表（`records`，每条含 `url/companyName/area/salaryRange`）。
-- 在 `https://we.51job.com/pc/search?` 页面会显示左上角“抓取”和“抓取下一页”按钮。
+- 在 `https://we.51job.com/pc/search?` 页面会显示左上角“抓取”“抓取下一页”“抓取前50页”按钮。
 - “抓取下一页”会优先点当前页码+1（没有当前页时尝试页码2），再自动执行抓取。
+- “抓取前50页”会持续执行“抓取下一页”，直到没有下一页或已经抓取50页。
 - 点击“抓取”后，扩展会解析当前页面职位信息并 `POST /record` 存入桥服务内存。
 - 记录字段：`url`、`companyName`、`area`、`salaryRange`（`url` 去掉 query/hash）。
 - 去重键为 `url`（不含查询串）；服务进程重启后记录会清空。

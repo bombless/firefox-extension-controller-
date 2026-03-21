@@ -4,6 +4,7 @@ const BRIDGE = 'http://127.0.0.1:9230';
 const TARGET_PREFIX = 'https://we.51job.com/pc/search?';
 const BUTTON_ID = '__we51job_capture_btn__';
 const BUTTON_NEXT_ID = '__we51job_capture_next_btn__';
+const BUTTON_BATCH_ID = '__we51job_capture_50_btn__';
 
 const CAPTURE_SCRIPT = `(() => {
   const cleanText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
@@ -261,6 +262,7 @@ async function injectCaptureButton(tabId) {
   const script = `(() => {
     const captureId = ${JSON.stringify(BUTTON_ID)};
     const nextId = ${JSON.stringify(BUTTON_NEXT_ID)};
+    const batchId = ${JSON.stringify(BUTTON_BATCH_ID)};
     const runtime = (typeof browser !== 'undefined' && browser.runtime)
       || (typeof chrome !== 'undefined' && chrome.runtime)
       || null;
@@ -287,27 +289,57 @@ async function injectCaptureButton(tabId) {
       button.style.fontFamily = 'sans-serif';
     };
 
-    const runCapture = async (button, originalText) => {
+    const setBusy = (button, text) => {
+      button.dataset.loading = '1';
+      button.disabled = true;
+      button.style.opacity = '0.85';
+      if (text) button.textContent = text;
+    };
+
+    const resetLater = (button, originalText, delay = 1500) => {
+      window.setTimeout(() => {
+        button.dataset.loading = '0';
+        button.disabled = false;
+        button.style.opacity = '1';
+        button.textContent = originalText;
+      }, delay);
+    };
+
+    const setLocked = (button, locked) => {
+      if (!button) return;
+      if (locked) {
+        button.dataset.batchLocked = '1';
+        button.disabled = true;
+        button.style.opacity = button.dataset.loading === '1' ? '0.85' : '0.6';
+        return;
+      }
+      button.dataset.batchLocked = '0';
+      if (button.dataset.loading === '1') {
+        button.disabled = true;
+        button.style.opacity = '0.85';
+      } else {
+        button.disabled = false;
+        button.style.opacity = '1';
+      }
+    };
+
+    const runCapture = async (button) => {
       try {
         const result = await runtime.sendMessage({ cmd: 'capture' });
         if (result && result.ok) {
           const count = typeof result.total === 'number' ? result.total : '-';
           const added = typeof result.inserted === 'number' ? result.inserted : '-';
           button.textContent = '已抓取 +' + added + ' / 总' + count;
+          return { ok: true, result };
         } else {
           button.textContent = '抓取失败';
           console.error('[Page Control Bridge] capture failed', result);
+          return { ok: false, error: result?.error || 'capture failed' };
         }
       } catch (error) {
         button.textContent = '抓取异常';
         console.error('[Page Control Bridge] capture error', error);
-      } finally {
-        window.setTimeout(() => {
-          button.dataset.loading = '0';
-          button.disabled = false;
-          button.style.opacity = '1';
-          button.textContent = originalText;
-        }, 1500);
+        return { ok: false, error: error?.message || 'capture error' };
       }
     };
 
@@ -423,65 +455,117 @@ async function injectCaptureButton(tabId) {
       return { ok: true };
     };
 
-    let captureBtn = document.getElementById(captureId);
-    if (!captureBtn) {
-      captureBtn = document.createElement('button');
-      captureBtn.id = captureId;
-      captureBtn.textContent = '抓取';
-      captureBtn.title = '抓取当前页职位';
-      applyBaseStyle(captureBtn, '12px', '#1677ff', '#1677ff');
-      captureBtn.addEventListener('click', async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (captureBtn.dataset.loading === '1') return;
-        const originalText = captureBtn.textContent;
-        captureBtn.dataset.loading = '1';
-        captureBtn.disabled = true;
-        captureBtn.style.opacity = '0.85';
-        captureBtn.textContent = '抓取中...';
-        await runCapture(captureBtn, originalText);
-      });
-      document.body.appendChild(captureBtn);
-    }
+    const performNextPageCapture = async (button) => {
+      button.textContent = '翻页中...';
+      const moved = await gotoNextPage();
+      if (!moved.ok) {
+        button.textContent = '未找到下一页';
+        console.warn('[Page Control Bridge] next page not found', moved.error);
+        return { ok: false, stage: 'next', error: moved.error || 'next page not found' };
+      }
 
-    let nextBtn = document.getElementById(nextId);
-    if (!nextBtn) {
-      nextBtn = document.createElement('button');
-      nextBtn.id = nextId;
-      nextBtn.textContent = '抓取下一页';
-      nextBtn.title = '翻到下一页后抓取';
-      applyBaseStyle(nextBtn, '92px', '#2f9e44', '#2f9e44');
-      nextBtn.addEventListener('click', async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (nextBtn.dataset.loading === '1') return;
-        const originalText = nextBtn.textContent;
-        nextBtn.dataset.loading = '1';
-        nextBtn.disabled = true;
-        nextBtn.style.opacity = '0.85';
-        nextBtn.textContent = '翻页中...';
-        try {
-          const moved = await gotoNextPage();
-          if (!moved.ok) {
-            nextBtn.textContent = '未找到下一页';
-            console.warn('[Page Control Bridge] next page not found', moved.error);
-            return;
+      button.textContent = '抓取中...';
+      const captured = await runCapture(button);
+      if (!captured.ok) {
+        return { ok: false, stage: 'capture', error: captured.error || 'capture failed' };
+      }
+      return { ok: true, result: captured.result };
+    };
+
+    const oldCapture = document.getElementById(captureId);
+    const oldNext = document.getElementById(nextId);
+    const oldBatch = document.getElementById(batchId);
+    if (oldCapture) oldCapture.remove();
+    if (oldNext) oldNext.remove();
+    if (oldBatch) oldBatch.remove();
+
+    const captureBtn = document.createElement('button');
+    captureBtn.id = captureId;
+    captureBtn.textContent = '抓取';
+    captureBtn.title = '抓取当前页职位';
+    applyBaseStyle(captureBtn, '12px', '#1677ff', '#1677ff');
+
+    const nextBtn = document.createElement('button');
+    nextBtn.id = nextId;
+    nextBtn.textContent = '抓取下一页';
+    nextBtn.title = '翻到下一页后抓取';
+    applyBaseStyle(nextBtn, '92px', '#2f9e44', '#2f9e44');
+
+    const batchBtn = document.createElement('button');
+    batchBtn.id = batchId;
+    batchBtn.textContent = '抓取前50页';
+    batchBtn.title = '持续抓取下一页，最多50页';
+    applyBaseStyle(batchBtn, '206px', '#c77d00', '#c77d00');
+
+    captureBtn.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (captureBtn.dataset.loading === '1' || captureBtn.dataset.batchLocked === '1') return;
+      const originalText = captureBtn.textContent;
+      setBusy(captureBtn, '抓取中...');
+      await runCapture(captureBtn);
+      resetLater(captureBtn, originalText);
+    });
+
+    nextBtn.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (nextBtn.dataset.loading === '1' || nextBtn.dataset.batchLocked === '1') return;
+      const originalText = nextBtn.textContent;
+      setBusy(nextBtn, '翻页中...');
+      const step = await performNextPageCapture(nextBtn);
+      resetLater(nextBtn, originalText, step.ok ? 1500 : 2200);
+    });
+
+    batchBtn.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (batchBtn.dataset.loading === '1' || batchBtn.dataset.batchLocked === '1') return;
+
+      const originalText = batchBtn.textContent;
+      setBusy(batchBtn, '准备中...');
+      setLocked(captureBtn, true);
+      setLocked(nextBtn, true);
+
+      let successCount = 0;
+      let stopReason = 'no-next';
+      try {
+        for (let i = 0; i < 50; i += 1) {
+          batchBtn.textContent = '第' + (i + 1) + '/50页';
+          const step = await performNextPageCapture(batchBtn);
+          if (!step.ok) {
+            stopReason = step.stage === 'next' ? 'no-next' : 'capture-failed';
+            break;
           }
-          nextBtn.textContent = '抓取中...';
-          await runCapture(nextBtn, originalText);
-        } finally {
-          if (nextBtn.dataset.loading === '1') {
-            window.setTimeout(() => {
-              nextBtn.dataset.loading = '0';
-              nextBtn.disabled = false;
-              nextBtn.style.opacity = '1';
-              nextBtn.textContent = originalText;
-            }, 1500);
-          }
+          successCount += 1;
+          stopReason = successCount >= 50 ? 'limit' : stopReason;
+          await sleep(280);
         }
-      });
-      document.body.appendChild(nextBtn);
-    }
+
+        if (successCount >= 50) {
+          batchBtn.textContent = '已抓取50页';
+        } else if (stopReason === 'no-next') {
+          batchBtn.textContent = '已到最后一页';
+        } else {
+          batchBtn.textContent = '抓取中断(' + successCount + ')';
+        }
+      } finally {
+        batchBtn.dataset.loading = '0';
+        batchBtn.disabled = false;
+        batchBtn.style.opacity = '1';
+        setLocked(captureBtn, false);
+        setLocked(nextBtn, false);
+        window.setTimeout(() => {
+          if (batchBtn.dataset.loading !== '1') {
+            batchBtn.textContent = originalText;
+          }
+        }, 1700);
+      }
+    });
+
+    document.body.appendChild(captureBtn);
+    document.body.appendChild(nextBtn);
+    document.body.appendChild(batchBtn);
   })();`;
 
   try {
