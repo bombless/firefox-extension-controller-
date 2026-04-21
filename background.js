@@ -1,10 +1,69 @@
-/* global browser */
+/* global chrome */
 
 const BRIDGE = 'http://127.0.0.1:9230';
 const TARGET_PREFIX = 'https://we.51job.com/pc/search?';
 const BUTTON_ID = '__we51job_capture_btn__';
 const BUTTON_NEXT_ID = '__we51job_capture_next_btn__';
 const BUTTON_BATCH_ID = '__we51job_capture_50_btn__';
+const OFFSCREEN_URL = 'offscreen.html';
+
+function chromeCall(namespace, method, ...args) {
+  return new Promise((resolve, reject) => {
+    namespace[method](...args, (result) => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve(result);
+    });
+  });
+}
+
+async function queryTabs(queryInfo) {
+  return chromeCall(chrome.tabs, 'query', queryInfo);
+}
+
+async function getTab(tabId) {
+  return chromeCall(chrome.tabs, 'get', tabId);
+}
+
+async function updateTab(tabId, updateProperties) {
+  return chromeCall(chrome.tabs, 'update', tabId, updateProperties);
+}
+
+async function createOffscreenDocument() {
+  if (!chrome.offscreen?.createDocument) return;
+
+  const offscreenPath = chrome.runtime.getURL(OFFSCREEN_URL);
+  if (chrome.runtime.getContexts) {
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT'],
+      documentUrls: [offscreenPath]
+    });
+    if (contexts.length > 0) return;
+  }
+
+  try {
+    await chrome.offscreen.createDocument({
+      url: OFFSCREEN_URL,
+      reasons: ['DOM_SCRAPING'],
+      justification: 'Poll the local Page Control Bridge while the MV3 service worker is idle.'
+    });
+  } catch (error) {
+    if (!String(error?.message || '').includes('Only a single offscreen')) {
+      throw error;
+    }
+  }
+}
+
+function evaluateSource(source) {
+  try {
+    return (0, eval)(source);
+  } catch (error) {
+    if (error instanceof SyntaxError && /^\s*return\b/.test(String(source || ''))) {
+      return Function(source)();
+    }
+    throw error;
+  }
+}
 
 const CAPTURE_SCRIPT = `(() => {
   const cleanText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
@@ -150,13 +209,18 @@ const CAPTURE_SCRIPT = `(() => {
 })();`;
 
 async function getActiveTab() {
-  const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+  const tabs = await queryTabs({ active: true, currentWindow: true });
   return tabs[0] || null;
 }
 
 async function evalInTab(tabId, code) {
-  const result = await browser.tabs.executeScript(tabId, { code });
-  return Array.isArray(result) ? result[0] : result;
+  const result = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: evaluateSource,
+    args: [code],
+    world: 'ISOLATED'
+  });
+  return Array.isArray(result) && result[0] ? result[0].result : undefined;
 }
 
 function sleep(ms) {
@@ -246,7 +310,7 @@ async function waitForDomStable(tabId, params = {}) {
 async function getTargetTab(context = {}) {
   if (context && typeof context.tabId === 'number') {
     try {
-      return await browser.tabs.get(context.tabId);
+      return await getTab(context.tabId);
     } catch (_) {
       // fall back to active tab
     }
@@ -267,6 +331,16 @@ async function injectCaptureButton(tabId) {
       || (typeof chrome !== 'undefined' && chrome.runtime)
       || null;
     if (!runtime || !runtime.sendMessage) return;
+
+    const sendRuntimeMessage = (message) => new Promise((resolve, reject) => {
+      runtime.sendMessage(message, (response) => {
+        const chromeError = (typeof chrome !== 'undefined' && chrome.runtime)
+          ? chrome.runtime.lastError
+          : null;
+        if (chromeError) reject(new Error(chromeError.message));
+        else resolve(response);
+      });
+    });
 
     const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
     const cleanText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
@@ -325,7 +399,7 @@ async function injectCaptureButton(tabId) {
 
     const runCapture = async (button) => {
       try {
-        const result = await runtime.sendMessage({ cmd: 'capture' });
+        const result = await sendRuntimeMessage({ cmd: 'capture' });
         if (result && result.ok) {
           const count = typeof result.total === 'number' ? result.total : '-';
           const added = typeof result.inserted === 'number' ? result.inserted : '-';
@@ -855,7 +929,7 @@ async function api(cmd, params = {}, context = {}) {
 
   if (cmd === 'open') {
     if (!params.url) return { ok: false, error: 'missing url' };
-    await browser.tabs.update(tab.id, { url: params.url });
+    await updateTab(tab.id, { url: params.url });
     return { ok: true };
   }
 
@@ -934,12 +1008,20 @@ async function api(cmd, params = {}, context = {}) {
   return { ok: false, error: `unknown cmd: ${cmd}` };
 }
 
-browser.runtime.onMessage.addListener(async (msg, sender) => {
-  try {
-    return await api(msg?.cmd, msg?.params || {}, { tabId: sender?.tab?.id });
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    try {
+      await createOffscreenDocument();
+      if (msg?.cmd === '__bridge_task__') {
+        const task = msg.task || {};
+        return await api(task.cmd, task.params || {});
+      }
+      return await api(msg?.cmd, msg?.params || {}, { tabId: sender?.tab?.id });
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  })().then(sendResponse);
+  return true;
 });
 
 async function pollBridge() {
@@ -966,18 +1048,26 @@ async function pollBridge() {
   }
 }
 
-setInterval(pollBridge, 700);
-console.log('[Page Control Bridge] polling', BRIDGE);
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'page-control-bridge-keepalive') {
+    createOffscreenDocument().catch(() => {});
+    pollBridge();
+  }
+});
 
-browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+chrome.alarms.create('page-control-bridge-keepalive', { periodInMinutes: 0.5 });
+createOffscreenDocument().catch(() => {});
+console.log('[Page Control Bridge] service worker ready', BRIDGE);
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.status === 'complete') {
     await syncButtonForTab(tabId, tab?.url);
   }
 });
 
-browser.tabs.onActivated.addListener(async ({ tabId }) => {
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   try {
-    const tab = await browser.tabs.get(tabId);
+    const tab = await getTab(tabId);
     await syncButtonForTab(tabId, tab?.url);
   } catch (_) {
     // tab may no longer exist
@@ -986,7 +1076,7 @@ browser.tabs.onActivated.addListener(async ({ tabId }) => {
 
 async function injectButtonsForExistingTabs() {
   try {
-    const tabs = await browser.tabs.query({});
+    const tabs = await queryTabs({});
     for (const tab of tabs) {
       await syncButtonForTab(tab.id, tab.url);
     }

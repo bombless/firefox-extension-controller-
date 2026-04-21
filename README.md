@@ -1,20 +1,23 @@
-# Firefox 扩展 + HTTP 控制（不走 Selenium）
+# Chromium 扩展 + HTTP 控制（不走 Selenium）
 
 你说的架构：**LLM 决策 + HTTP 原子能力**。
 
 ## 目录
-- `manifest.json` / `background.js`：扩展（运行在你自己的 Firefox）
+- `manifest.json` / `background.js`：Chromium Manifest V3 扩展
+- `offscreen.html` / `offscreen.js`：后台轮询本地 HTTP 桥，避免 MV3 service worker 休眠后无法持续拉命令
 - `bridge-server.js`：本地 HTTP 桥（127.0.0.1:9230）
 - `control.html`：可选手动调试页面
 
 ## 1) 加载扩展
-1. 打开 `about:debugging#/runtime/this-firefox`
-2. 临时加载 `manifest.json`
-3. 点扩展图标可打开 `control.html`（可选）
+1. 打开 `chrome://extensions` 或 `edge://extensions`
+2. 打开右上角“开发者模式”
+3. 点“加载已解压的扩展程序”
+4. 选择本目录 `51job-extension`
+5. 点扩展图标可打开 `control.html`（可选）
 
 ## 2) 启动 HTTP 桥
 ```bash
-cd firefox-extension-controller
+cd 51job-extension
 node bridge-server.js
 ```
 
@@ -51,7 +54,7 @@ curl -s http://127.0.0.1:9230/record
 ```
 
 ## 说明
-- 扩展每 ~700ms 轮询桥服务器拉取命令并执行。
+- 扩展的 offscreen 后台页每 ~700ms 轮询桥服务器拉取命令并执行。
 - 扩展只提供原子能力：`status/content/html/dom/open/click/eval`。
 - “下一页判断”由 LLM 在外部完成。
 - 在 `we.51job.com/pc/search` 页面，`/content` 会优先返回结构化职位列表（`records`，每条含 `url/companyName/area/salaryRange`）。

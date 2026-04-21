@@ -10,9 +10,32 @@
   <button id="open">open</button>
   <pre id="out" style="white-space:pre-wrap"></pre>
 <script>
+function sendRuntimeMessage(message) {
+  return new Promise((resolve, reject) => {
+    const runtime = (typeof chrome !== 'undefined' && chrome.runtime)
+      || (typeof browser !== 'undefined' && browser.runtime)
+      || null;
+    if (!runtime) {
+      reject(new Error('extension runtime unavailable'));
+      return;
+    }
+    runtime.sendMessage(message, (response) => {
+      const error = (typeof chrome !== 'undefined' && chrome.runtime)
+        ? chrome.runtime.lastError
+        : null;
+      if (error) reject(new Error(error.message));
+      else resolve(response);
+    });
+  });
+}
+
 async function call(cmd, params={}) {
-  const res = await browser.runtime.sendMessage({cmd, params});
-  document.getElementById('out').textContent = JSON.stringify(res, null, 2);
+  try {
+    const res = await sendRuntimeMessage({cmd, params});
+    document.getElementById('out').textContent = JSON.stringify(res, null, 2);
+  } catch (error) {
+    document.getElementById('out').textContent = JSON.stringify({ ok: false, error: error.message }, null, 2);
+  }
 }
 document.getElementById('status').onclick = () => call('status');
 document.getElementById('content').onclick = () => call('content');
