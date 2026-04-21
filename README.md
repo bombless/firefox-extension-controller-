@@ -5,6 +5,7 @@
 ## 目录
 - `manifest.json` / `background.js`：Chromium Manifest V3 扩展
 - `content-wakeup.js`：在 51job 搜索页主动唤醒后台并注入抓取按钮
+- 在 `i.51job.com/userset/my_apply.php` 页面会显示“爬取公司名”按钮，采集我的申请页面公司名并自动翻页
 - `offscreen.html` / `offscreen.js`：后台轮询本地 HTTP 桥，避免 MV3 service worker 休眠后无法持续拉命令
 - `bridge-server.js`：本地 HTTP 桥（127.0.0.1:9230）
 - `control.html`：可选手动调试页面
@@ -52,6 +53,9 @@ curl -s -X POST http://127.0.0.1:9230/call \
 
 # 查询抓取记录（内存，进程退出即清空）
 curl -s http://127.0.0.1:9230/record
+
+# 查询我的申请公司名（内存，进程退出即清空）
+curl -s http://127.0.0.1:9230/companies
 ```
 
 ## 说明
@@ -65,3 +69,4 @@ curl -s http://127.0.0.1:9230/record
 - 点击“抓取”后，扩展会解析当前页面职位信息并 `POST /record` 存入桥服务内存。
 - 记录字段：`url`、`companyName`、`area`、`salaryRange`（`url` 去掉 query/hash）。
 - 去重键为 `url`（不含查询串）；服务进程重启后记录会清空。
+- 点击“爬取公司名”后，扩展会解析 `a.gs` 公司名并 `POST /companies` 存入桥服务内存；`GET /companies` 返回去重后的公司名列表。

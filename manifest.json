@@ -20,7 +20,10 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://we.51job.com/pc/search*"],
+      "matches": [
+        "https://we.51job.com/pc/search*",
+        "https://i.51job.com/userset/my_apply.php*"
+      ],
       "js": ["content-wakeup.js"],
       "run_at": "document_idle"
     }

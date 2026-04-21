@@ -3,6 +3,8 @@
 const BUTTON_ID = '__we51job_capture_btn__';
 const BUTTON_NEXT_ID = '__we51job_capture_next_btn__';
 const BUTTON_BATCH_ID = '__we51job_capture_50_btn__';
+const COMPANY_BUTTON_ID = '__we51job_company_crawl_btn__';
+const APPLY_CRAWL_STATE_KEY = '__pcBridgeApplyCompanyCrawl__';
 
 function requestButtonInjection() {
   chrome.runtime.sendMessage({ cmd: '__ensure_buttons__' }, () => {
@@ -23,6 +25,14 @@ function sendRuntimeMessage(message) {
 
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function isApplyPage() {
+  return location.hostname === 'i.51job.com' && location.pathname === '/userset/my_apply.php';
+}
+
+function isSearchPage() {
+  return location.hostname === 'we.51job.com' && location.pathname === '/pc/search';
 }
 
 function applyBaseStyle(button, left, background, borderColor) {
@@ -272,7 +282,150 @@ function ensureButtons() {
   document.body.appendChild(batchBtn);
 }
 
-ensureButtons();
-requestButtonInjection();
-setTimeout(requestButtonInjection, 1200);
-setTimeout(ensureButtons, 1200);
+function getApplyCompanies() {
+  const names = Array.from(document.querySelectorAll('a.gs'))
+    .map((node) => cleanText(node.getAttribute('title') || node.textContent || ''))
+    .filter(Boolean);
+  return Array.from(new Set(names));
+}
+
+function getApplyNextPageUrl() {
+  const links = Array.from(document.querySelectorAll('a[href]'));
+  for (const link of links) {
+    if (cleanText(link.textContent).includes('下一页')) {
+      return new URL(link.getAttribute('href'), location.href).href;
+    }
+  }
+  return '';
+}
+
+function getApplyCrawlState() {
+  try {
+    const state = JSON.parse(localStorage.getItem(APPLY_CRAWL_STATE_KEY) || '{}');
+    return state && typeof state === 'object' ? state : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function setApplyCrawlState(state) {
+  localStorage.setItem(APPLY_CRAWL_STATE_KEY, JSON.stringify(state));
+}
+
+function clearApplyCrawlState() {
+  localStorage.removeItem(APPLY_CRAWL_STATE_KEY);
+}
+
+async function storeApplyCompanies() {
+  const companies = getApplyCompanies();
+  const result = await sendRuntimeMessage({
+    cmd: 'storeCompanies',
+    params: {
+      sourcePage: location.href,
+      companies
+    }
+  });
+  if (!result?.ok) {
+    throw new Error(result?.error || 'store companies failed');
+  }
+  return { companies, result };
+}
+
+async function continueApplyCompanyCrawl(button) {
+  const state = getApplyCrawlState();
+  if (!state.running) return;
+
+  if (button) setBusy(button, '采集中...');
+
+  try {
+    const { companies, result } = await storeApplyCompanies();
+    const pages = Number.isFinite(state.pages) ? state.pages + 1 : 1;
+    const seen = Number.isFinite(state.seen) ? state.seen + companies.length : companies.length;
+    const total = typeof result.total === 'number' ? result.total : state.total || 0;
+    const nextUrl = getApplyNextPageUrl();
+    const maxPages = Number.isFinite(state.maxPages) ? state.maxPages : 200;
+
+    if (button) {
+      button.textContent = '已采集' + pages + '页 / 总' + total;
+    }
+
+    if (!nextUrl || pages >= maxPages) {
+      clearApplyCrawlState();
+      if (button) {
+        button.dataset.loading = '0';
+        button.disabled = false;
+        button.style.opacity = '1';
+        button.textContent = '完成：' + total + '家公司';
+      }
+      return;
+    }
+
+    setApplyCrawlState({
+      running: true,
+      pages,
+      seen,
+      total,
+      maxPages,
+      updatedAt: Date.now()
+    });
+
+    if (button) button.textContent = '跳到第' + (pages + 1) + '页...';
+    window.setTimeout(() => {
+      location.href = nextUrl;
+    }, 500);
+  } catch (error) {
+    clearApplyCrawlState();
+    if (button) {
+      button.dataset.loading = '0';
+      button.disabled = false;
+      button.style.opacity = '1';
+      button.textContent = '采集失败';
+      button.title = error.message;
+    }
+  }
+}
+
+function ensureApplyCompanyButton(autoContinue = true) {
+  if (!document.body) return;
+
+  document.getElementById(COMPANY_BUTTON_ID)?.remove();
+
+  const button = document.createElement('button');
+  button.id = COMPANY_BUTTON_ID;
+  button.textContent = getApplyCrawlState().running ? '继续采集公司名' : '爬取公司名';
+  button.title = '采集我的申请页面公司名，并自动翻页直到最后一页';
+  applyBaseStyle(button, '12px', '#7c3aed', '#7c3aed');
+
+  button.addEventListener('click', async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (button.dataset.loading === '1') return;
+    setApplyCrawlState({
+      running: true,
+      pages: 0,
+      seen: 0,
+      total: 0,
+      maxPages: 200,
+      updatedAt: Date.now()
+    });
+    await continueApplyCompanyCrawl(button);
+  });
+
+  document.body.appendChild(button);
+
+  if (autoContinue && getApplyCrawlState().running) {
+    window.setTimeout(() => {
+      continueApplyCompanyCrawl(button);
+    }, 800);
+  }
+}
+
+if (isApplyPage()) {
+  ensureApplyCompanyButton();
+  setTimeout(() => ensureApplyCompanyButton(false), 1200);
+} else if (isSearchPage()) {
+  ensureButtons();
+  requestButtonInjection();
+  setTimeout(requestButtonInjection, 1200);
+  setTimeout(ensureButtons, 1200);
+}

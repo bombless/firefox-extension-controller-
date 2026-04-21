@@ -1017,6 +1017,36 @@ async function api(cmd, params = {}, context = {}) {
     };
   }
 
+  if (cmd === 'storeCompanies') {
+    const companies = Array.isArray(params.companies) ? params.companies : [];
+    let bridgeResult;
+    try {
+      const resp = await fetch(`${BRIDGE}/companies`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourcePage: params.sourcePage || tab.url || '',
+          companies
+        })
+      });
+      bridgeResult = await resp.json();
+      if (!resp.ok || !bridgeResult?.ok) {
+        return { ok: false, error: bridgeResult?.error || `bridge status ${resp.status}` };
+      }
+    } catch (e) {
+      return { ok: false, error: `bridge unreachable: ${e.message}` };
+    }
+
+    return {
+      ok: true,
+      captured: companies.length,
+      inserted: bridgeResult.inserted,
+      updated: bridgeResult.updated,
+      skipped: bridgeResult.skipped,
+      total: bridgeResult.total
+    };
+  }
+
   return { ok: false, error: `unknown cmd: ${cmd}` };
 }
 

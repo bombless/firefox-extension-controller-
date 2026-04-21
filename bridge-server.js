@@ -8,6 +8,7 @@ const DEFAULT_RESULT_TIMEOUT_MS = 45000;
 const queue = [];
 const waiting = new Map();
 const recordsByUrl = new Map();
+const companiesByName = new Map();
 
 function normalizeRecordUrl(raw) {
   if (typeof raw !== 'string' || !raw.trim()) return '';
@@ -86,6 +87,55 @@ function upsertRecords(records, meta = {}) {
     updated,
     skipped,
     total: recordsByUrl.size
+  };
+}
+
+function upsertCompanies(companies, meta = {}) {
+  const list = Array.isArray(companies) ? companies : [];
+  const now = new Date().toISOString();
+  const sourcePage = clean(meta?.sourcePage || '', 500);
+  let inserted = 0;
+  let updated = 0;
+  let skipped = 0;
+
+  for (const value of list) {
+    const name = clean(
+      typeof value === 'string' ? value : value?.companyName || value?.name || '',
+      200
+    );
+    if (!name) {
+      skipped += 1;
+      continue;
+    }
+
+    const existing = companiesByName.get(name);
+    if (!existing) {
+      companiesByName.set(name, {
+        name,
+        sourcePages: sourcePage ? [sourcePage] : [],
+        firstCapturedAt: now,
+        lastCapturedAt: now
+      });
+      inserted += 1;
+      continue;
+    }
+
+    const mergedSourcePages = new Set(existing.sourcePages || []);
+    if (sourcePage) mergedSourcePages.add(sourcePage);
+    companiesByName.set(name, {
+      name,
+      sourcePages: Array.from(mergedSourcePages).slice(-20),
+      firstCapturedAt: existing.firstCapturedAt || now,
+      lastCapturedAt: now
+    });
+    updated += 1;
+  }
+
+  return {
+    inserted,
+    updated,
+    skipped,
+    total: companiesByName.size
   };
 }
 
@@ -168,6 +218,21 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, { ok: true, ...summary });
   }
 
+  if (req.method === 'GET' && url.pathname === '/companies') {
+    const companies = Array.from(companiesByName.values())
+      .sort((a, b) => String(b.lastCapturedAt).localeCompare(String(a.lastCapturedAt)))
+      .map((item) => item.name);
+    return send(res, 200, { ok: true, count: companies.length, companies });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/companies') {
+    const body = await readJson(req);
+    const summary = upsertCompanies(body.companies, {
+      sourcePage: body.sourcePage || ''
+    });
+    return send(res, 200, { ok: true, ...summary });
+  }
+
   if (req.method === 'GET' && url.pathname === '/next-command') {
     const task = queue.shift() || null;
     return send(res, 200, task || {});
@@ -222,4 +287,6 @@ server.listen(PORT, HOST, () => {
   console.log('GET /status /content /html /dom /open?url=... /click?selector=... /eval?script=...');
   console.log('POST /record {records:[{url,jobName,companyName,area,salaryRange}], sourcePage?}');
   console.log('GET /record');
+  console.log('POST /companies {companies:[name], sourcePage?}');
+  console.log('GET /companies');
 });
