@@ -3,6 +3,8 @@ const http = require('http');
 const { randomUUID } = require('crypto');
 
 const PORT = 9230;
+const HOST = '127.0.0.1';
+const DEFAULT_RESULT_TIMEOUT_MS = 45000;
 const queue = [];
 const waiting = new Map();
 const recordsByUrl = new Map();
@@ -124,7 +126,7 @@ function enqueue(cmd, params = {}) {
   return id;
 }
 
-function waitResult(id, timeoutMs = 15000) {
+function waitResult(id, timeoutMs = DEFAULT_RESULT_TIMEOUT_MS) {
   return new Promise((resolve) => {
     const t = setTimeout(() => {
       waiting.delete(id);
@@ -181,14 +183,14 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/call') {
     const body = await readJson(req);
     const id = enqueue(body.cmd, body.params || {});
-    const result = await waitResult(id, body.timeoutMs || 15000);
+    const result = await waitResult(id, body.timeoutMs || DEFAULT_RESULT_TIMEOUT_MS);
     return send(res, 200, { id, result });
   }
 
   if (req.method === 'GET' && url.pathname === '/html') {
     const params = Object.fromEntries(url.searchParams.entries());
     const id = enqueue('html', params);
-    const result = await waitResult(id, 15000);
+    const result = await waitResult(id);
     if (result?.ok && typeof result.html === 'string') {
       return sendHtml(res, 200, result.html);
     }
@@ -198,7 +200,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/content') {
     const params = Object.fromEntries(url.searchParams.entries());
     const id = enqueue('content', params);
-    const result = await waitResult(id, 15000);
+    const result = await waitResult(id);
     if (result?.ok) return send(res, 200, result);
     return send(res, 502, { id, result });
   }
@@ -207,15 +209,15 @@ const server = http.createServer(async (req, res) => {
     const cmd = url.pathname.slice(1);
     const params = Object.fromEntries(url.searchParams.entries());
     const id = enqueue(cmd, params);
-    const result = await waitResult(id, 15000);
+    const result = await waitResult(id);
     return send(res, 200, { id, result });
   }
 
   send(res, 404, { ok: false, error: 'not found' });
 });
 
-server.listen(PORT, () => {
-  console.log(`Bridge server listening on http://127.0.0.1:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Bridge server listening on http://${HOST}:${PORT}`);
   console.log('POST /call {cmd, params}');
   console.log('GET /status /content /html /dom /open?url=... /click?selector=... /eval?script=...');
   console.log('POST /record {records:[{url,jobName,companyName,area,salaryRange}], sourcePage?}');

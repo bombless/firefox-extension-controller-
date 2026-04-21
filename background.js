@@ -1,7 +1,8 @@
 /* global chrome */
 
 const BRIDGE = 'http://127.0.0.1:9230';
-const TARGET_PREFIX = 'https://we.51job.com/pc/search?';
+const TARGET_HOST = 'we.51job.com';
+const TARGET_PATH = '/pc/search';
 const BUTTON_ID = '__we51job_capture_btn__';
 const BUTTON_NEXT_ID = '__we51job_capture_next_btn__';
 const BUTTON_BATCH_ID = '__we51job_capture_50_btn__';
@@ -223,6 +224,190 @@ async function evalInTab(tabId, code) {
   return Array.isArray(result) && result[0] ? result[0].result : undefined;
 }
 
+async function executeFunctionInTab(tabId, func, ...args) {
+  const result = await chrome.scripting.executeScript({
+    target: { tabId },
+    func,
+    args,
+    world: 'ISOLATED'
+  });
+  return Array.isArray(result) && result[0] ? result[0].result : undefined;
+}
+
+function getDomStableState() {
+  const key = '__pcBridgeDomState__';
+  const root = document.documentElement || document.body;
+  const now = Date.now();
+
+  if (!window[key]) {
+    window[key] = { lastMutationAt: now };
+  }
+
+  const st = window[key];
+  if (!st.observer && root) {
+    const observer = new MutationObserver(() => {
+      st.lastMutationAt = Date.now();
+    });
+    observer.observe(root, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true
+    });
+    st.observer = observer;
+    st.lastMutationAt = now;
+  }
+
+  return {
+    readyState: document.readyState,
+    now,
+    lastMutationAt: st.lastMutationAt || now
+  };
+}
+
+function collectRenderedHtml() {
+  const docType = document.doctype
+    ? '<!DOCTYPE ' + document.doctype.name
+      + (document.doctype.publicId ? ' PUBLIC "' + document.doctype.publicId + '"' : '')
+      + (!document.doctype.publicId && document.doctype.systemId ? ' SYSTEM' : '')
+      + (document.doctype.systemId ? ' "' + document.doctype.systemId + '"' : '')
+      + '>'
+    : '';
+
+  const root = document.documentElement;
+  const clone = root ? root.cloneNode(true) : null;
+
+  if (root && clone) {
+    const srcFields = root.querySelectorAll('input,textarea,select,option');
+    const dstFields = clone.querySelectorAll('input,textarea,select,option');
+    const len = Math.min(srcFields.length, dstFields.length);
+
+    for (let i = 0; i < len; i += 1) {
+      const src = srcFields[i];
+      const dst = dstFields[i];
+      const tag = src.tagName;
+
+      if (tag === 'INPUT') {
+        if (src.type !== 'password') {
+          dst.setAttribute('value', src.value || '');
+        }
+        if (src.checked) dst.setAttribute('checked', '');
+        else dst.removeAttribute('checked');
+      } else if (tag === 'TEXTAREA') {
+        dst.textContent = src.value || '';
+      } else if (tag === 'SELECT') {
+        const srcOptions = src.options || [];
+        const dstOptions = dst.options || [];
+        const olen = Math.min(srcOptions.length, dstOptions.length);
+        for (let j = 0; j < olen; j += 1) {
+          if (srcOptions[j].selected) dstOptions[j].setAttribute('selected', '');
+          else dstOptions[j].removeAttribute('selected');
+        }
+      } else if (tag === 'OPTION') {
+        if (src.selected) dst.setAttribute('selected', '');
+        else dst.removeAttribute('selected');
+      }
+    }
+  }
+
+  const serializer = new XMLSerializer();
+  const htmlBody = clone ? serializer.serializeToString(clone) : '';
+  const html = docType ? (docType + '\n' + htmlBody) : htmlBody;
+
+  return {
+    title: document.title,
+    url: location.href,
+    readyState: document.readyState,
+    elementCount: document.getElementsByTagName('*').length,
+    html
+  };
+}
+
+function collectPageContent() {
+  const cleanText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+
+  const decodeHtmlEntities = (raw) => {
+    if (!raw || typeof raw !== 'string') return '';
+    const text = raw;
+    if (!/[&][a-z#0-9]+;/i.test(text)) return text;
+    const el = document.createElement('textarea');
+    el.innerHTML = text;
+    return el.value;
+  };
+
+  const parseSensorsData = (rawValue) => {
+    if (!rawValue) return null;
+    const candidates = [
+      String(rawValue),
+      decodeHtmlEntities(String(rawValue))
+    ];
+
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        if (parsed && typeof parsed === 'object') return parsed;
+      } catch (_) {
+        // try next form
+      }
+    }
+    return null;
+  };
+
+  const jobItems = Array.from(document.querySelectorAll('.joblist-item'));
+  const records = [];
+  const seen = new Set();
+
+  for (const item of jobItems) {
+    const sensorNode = item.querySelector('[sensorsdata]');
+    const parsed = parseSensorsData(sensorNode ? sensorNode.getAttribute('sensorsdata') : '');
+    const jobId = cleanText(parsed?.jobId || '');
+    if (!jobId) continue;
+
+    const companyNode = item.querySelector('.joblist-item-right .cname');
+    const areaNode = item.querySelector('.joblist-item-jobinfo .area');
+    const salaryNode = item.querySelector('.joblist-item-jobinfo .sal');
+    const jobNameNode = item.querySelector('.joblist-item-left .jname');
+
+    const companyName = cleanText(
+      (companyNode && (companyNode.getAttribute('title') || companyNode.textContent)) ||
+      ''
+    );
+    const area = cleanText(parsed?.jobArea || (areaNode ? areaNode.textContent : ''));
+    const salaryRange = cleanText(parsed?.jobSalary || (salaryNode ? salaryNode.textContent : ''));
+    const jobName = cleanText(parsed?.jobTitle || (jobNameNode ? jobNameNode.textContent : ''));
+    const jobUrl = 'https://jobs.51job.com/guangzhou-thq/' + jobId + '.html';
+
+    if (seen.has(jobUrl)) continue;
+    seen.add(jobUrl);
+
+    records.push({
+      url: jobUrl,
+      jobName,
+      companyName,
+      area,
+      salaryRange
+    });
+  }
+
+  if (records.length > 0) {
+    return {
+      mode: 'joblist',
+      title: document.title,
+      url: location.href,
+      count: records.length,
+      records
+    };
+  }
+
+  return {
+    mode: 'fallback',
+    title: document.title,
+    url: location.href,
+    text: (document.body?.innerText || '').slice(0, 20000),
+    html: (document.documentElement?.outerHTML || '').slice(0, 100000)
+  };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -244,39 +429,7 @@ async function waitForDomStable(tabId, params = {}) {
   while (true) {
     let state;
     try {
-      state = await evalInTab(
-        tabId,
-        `(() => {
-          const key = '__pcBridgeDomState__';
-          const root = document.documentElement || document.body;
-          const now = Date.now();
-
-          if (!window[key]) {
-            window[key] = { lastMutationAt: now };
-          }
-
-          const st = window[key];
-          if (!st.observer && root) {
-            const observer = new MutationObserver(() => {
-              st.lastMutationAt = Date.now();
-            });
-            observer.observe(root, {
-              subtree: true,
-              childList: true,
-              attributes: true,
-              characterData: true
-            });
-            st.observer = observer;
-            st.lastMutationAt = now;
-          }
-
-          return {
-            readyState: document.readyState,
-            now,
-            lastMutationAt: st.lastMutationAt || now
-          };
-        })();`
-      );
+      state = await executeFunctionInTab(tabId, getDomStableState);
     } catch (_) {
       state = null;
     }
@@ -319,7 +472,15 @@ async function getTargetTab(context = {}) {
 }
 
 function isTargetPage(url) {
-  return typeof url === 'string' && url.startsWith(TARGET_PREFIX);
+  if (typeof url !== 'string' || !url) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' &&
+      parsed.hostname === TARGET_HOST &&
+      parsed.pathname === TARGET_PATH;
+  } catch (_) {
+    return false;
+  }
 }
 
 async function injectCaptureButton(tabId) {
@@ -672,159 +833,13 @@ async function api(cmd, params = {}, context = {}) {
   }
 
   if (cmd === 'content') {
-    const data = await evalInTab(
-      tab.id,
-      `(() => {
-        const cleanText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-
-        const decodeHtmlEntities = (raw) => {
-          if (!raw || typeof raw !== 'string') return '';
-          const text = raw;
-          if (!/[&][a-z#0-9]+;/i.test(text)) return text;
-          const el = document.createElement('textarea');
-          el.innerHTML = text;
-          return el.value;
-        };
-
-        const parseSensorsData = (rawValue) => {
-          if (!rawValue) return null;
-          const candidates = [
-            String(rawValue),
-            decodeHtmlEntities(String(rawValue))
-          ];
-
-          for (const candidate of candidates) {
-            try {
-              const parsed = JSON.parse(candidate);
-              if (parsed && typeof parsed === 'object') return parsed;
-            } catch (_) {
-              // try next form
-            }
-          }
-          return null;
-        };
-
-        const jobItems = Array.from(document.querySelectorAll('.joblist-item'));
-        const records = [];
-        const seen = new Set();
-
-        for (const item of jobItems) {
-          const sensorNode = item.querySelector('[sensorsdata]');
-          const parsed = parseSensorsData(sensorNode ? sensorNode.getAttribute('sensorsdata') : '');
-          const jobId = cleanText(parsed?.jobId || '');
-          if (!jobId) continue;
-
-          const companyNode = item.querySelector('.joblist-item-right .cname');
-          const areaNode = item.querySelector('.joblist-item-jobinfo .area');
-          const salaryNode = item.querySelector('.joblist-item-jobinfo .sal');
-          const jobNameNode = item.querySelector('.joblist-item-left .jname');
-
-          const companyName = cleanText(
-            (companyNode && (companyNode.getAttribute('title') || companyNode.textContent)) ||
-            ''
-          );
-          const area = cleanText(parsed?.jobArea || (areaNode ? areaNode.textContent : ''));
-          const salaryRange = cleanText(parsed?.jobSalary || (salaryNode ? salaryNode.textContent : ''));
-          const jobName = cleanText(parsed?.jobTitle || (jobNameNode ? jobNameNode.textContent : ''));
-          const jobUrl = 'https://jobs.51job.com/guangzhou-thq/' + jobId + '.html';
-
-          if (seen.has(jobUrl)) continue;
-          seen.add(jobUrl);
-
-          records.push({
-            url: jobUrl,
-            jobName,
-            companyName,
-            area,
-            salaryRange
-          });
-        }
-
-        if (records.length > 0) {
-          return {
-            mode: 'joblist',
-            title: document.title,
-            url: location.href,
-            count: records.length,
-            records
-          };
-        }
-
-        return {
-          mode: 'fallback',
-          title: document.title,
-          url: location.href,
-          text: (document.body?.innerText || '').slice(0, 20000),
-          html: (document.documentElement?.outerHTML || '').slice(0, 100000)
-        };
-      })();`
-    );
+    const data = await executeFunctionInTab(tab.id, collectPageContent);
     return { ok: true, ...data };
   }
 
   if (cmd === 'html') {
     const waitMeta = await waitForDomStable(tab.id, params);
-
-    const data = await evalInTab(
-      tab.id,
-      `(() => {
-        const docType = document.doctype
-          ? '<!DOCTYPE ' + document.doctype.name
-            + (document.doctype.publicId ? ' PUBLIC "' + document.doctype.publicId + '"' : '')
-            + (!document.doctype.publicId && document.doctype.systemId ? ' SYSTEM' : '')
-            + (document.doctype.systemId ? ' "' + document.doctype.systemId + '"' : '')
-            + '>'
-          : '';
-
-        const root = document.documentElement;
-        const clone = root ? root.cloneNode(true) : null;
-
-        if (root && clone) {
-          const srcFields = root.querySelectorAll('input,textarea,select,option');
-          const dstFields = clone.querySelectorAll('input,textarea,select,option');
-          const len = Math.min(srcFields.length, dstFields.length);
-
-          for (let i = 0; i < len; i += 1) {
-            const src = srcFields[i];
-            const dst = dstFields[i];
-            const tag = src.tagName;
-
-            if (tag === 'INPUT') {
-              if (src.type !== 'password') {
-                dst.setAttribute('value', src.value || '');
-              }
-              if (src.checked) dst.setAttribute('checked', '');
-              else dst.removeAttribute('checked');
-            } else if (tag === 'TEXTAREA') {
-              dst.textContent = src.value || '';
-            } else if (tag === 'SELECT') {
-              const srcOptions = src.options || [];
-              const dstOptions = dst.options || [];
-              const olen = Math.min(srcOptions.length, dstOptions.length);
-              for (let j = 0; j < olen; j += 1) {
-                if (srcOptions[j].selected) dstOptions[j].setAttribute('selected', '');
-                else dstOptions[j].removeAttribute('selected');
-              }
-            } else if (tag === 'OPTION') {
-              if (src.selected) dst.setAttribute('selected', '');
-              else dst.removeAttribute('selected');
-            }
-          }
-        }
-
-        const serializer = new XMLSerializer();
-        const htmlBody = clone ? serializer.serializeToString(clone) : '';
-        const html = docType ? (docType + '\\n' + htmlBody) : htmlBody;
-
-        return {
-          title: document.title,
-          url: location.href,
-          readyState: document.readyState,
-          elementCount: document.getElementsByTagName('*').length,
-          html
-        };
-      })();`
-    );
+    const data = await executeFunctionInTab(tab.id, collectRenderedHtml);
 
     return {
       ok: true,
@@ -935,15 +950,12 @@ async function api(cmd, params = {}, context = {}) {
 
   if (cmd === 'click') {
     if (!params.selector) return { ok: false, error: 'missing selector' };
-    const r = await evalInTab(
-      tab.id,
-      `(() => {
-        const el = document.querySelector(${JSON.stringify(params.selector)});
-        if (!el) return {ok:false,error:'not found'};
-        el.click();
-        return {ok:true};
-      })();`
-    );
+    const r = await executeFunctionInTab(tab.id, (selector) => {
+      const el = document.querySelector(selector);
+      if (!el) return { ok: false, error: 'not found' };
+      el.click();
+      return { ok: true };
+    }, params.selector);
     return r;
   }
 
@@ -1012,6 +1024,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
       await createOffscreenDocument();
+      if (msg?.cmd === '__ensure_buttons__') {
+        const tabId = sender?.tab?.id;
+        if (typeof tabId !== 'number') {
+          return { ok: false, error: 'missing sender tab' };
+        }
+        await syncButtonForTab(tabId, sender.tab.url);
+        return { ok: true };
+      }
       if (msg?.cmd === '__bridge_task__') {
         const task = msg.task || {};
         return await api(task.cmd, task.params || {});
@@ -1057,6 +1077,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 chrome.alarms.create('page-control-bridge-keepalive', { periodInMinutes: 0.5 });
 createOffscreenDocument().catch(() => {});
+setInterval(pollBridge, 700);
 console.log('[Page Control Bridge] service worker ready', BRIDGE);
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {

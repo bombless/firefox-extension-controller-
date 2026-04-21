@@ -18,6 +18,13 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["https://we.51job.com/pc/search*"],
+      "js": ["content-wakeup.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "action": {
     "default_title": "Page Control Bridge",
     "default_popup": "control.html"
