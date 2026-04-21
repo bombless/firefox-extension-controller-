@@ -5,6 +5,10 @@ const BUTTON_NEXT_ID = '__we51job_capture_next_btn__';
 const BUTTON_BATCH_ID = '__we51job_capture_50_btn__';
 const COMPANY_BUTTON_ID = '__we51job_company_crawl_btn__';
 const APPLY_CRAWL_STATE_KEY = '__pcBridgeApplyCompanyCrawl__';
+const COMPANY_HIGHLIGHT_ATTR = 'data-pc-bridge-company-highlight';
+let companyHighlightNames = new Set();
+let companyHighlightTimer = null;
+let companyHighlightObserver = null;
 
 function requestButtonInjection() {
   chrome.runtime.sendMessage({ cmd: '__ensure_buttons__' }, () => {
@@ -25,6 +29,13 @@ function sendRuntimeMessage(message) {
 
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function scheduleCompanyHighlight(delay = 120) {
+  window.clearTimeout(companyHighlightTimer);
+  companyHighlightTimer = window.setTimeout(() => {
+    applyCompanyHighlights();
+  }, delay);
 }
 
 function isApplyPage() {
@@ -179,6 +190,95 @@ async function runCapture(button) {
   } catch (error) {
     button.textContent = '抓取异常';
     return { ok: false, error: error?.message || 'capture error' };
+  }
+}
+
+async function refreshCompanyHighlightNames() {
+  const result = await sendRuntimeMessage({ cmd: 'getCompanies' });
+  if (!result?.ok) {
+    throw new Error(result?.error || 'get companies failed');
+  }
+  companyHighlightNames = new Set(
+    (Array.isArray(result.companies) ? result.companies : [])
+      .map(cleanText)
+      .filter(Boolean)
+  );
+  return companyHighlightNames;
+}
+
+function markCompanyElement(node, companyName) {
+  node.setAttribute(COMPANY_HIGHLIGHT_ATTR, companyName);
+  node.style.setProperty('color', '#d60000', 'important');
+  node.style.setProperty('font-weight', '700', 'important');
+  node.style.setProperty('text-decoration-color', '#d60000', 'important');
+}
+
+function clearCompanyHighlights() {
+  for (const node of Array.from(document.querySelectorAll('[' + COMPANY_HIGHLIGHT_ATTR + ']'))) {
+    node.removeAttribute(COMPANY_HIGHLIGHT_ATTR);
+    node.style.removeProperty('color');
+    node.style.removeProperty('font-weight');
+    node.style.removeProperty('text-decoration-color');
+  }
+}
+
+function findCompanyNameForNode(node) {
+  const title = cleanText(node.getAttribute?.('title') || '');
+  if (title && companyHighlightNames.has(title)) return title;
+
+  const text = cleanText(node.textContent || '');
+  if (text && companyHighlightNames.has(text)) return text;
+
+  return '';
+}
+
+function applyCompanyHighlights() {
+  if (!isSearchPage()) return 0;
+
+  clearCompanyHighlights();
+  if (companyHighlightNames.size === 0) return 0;
+
+  const selector = [
+    '.joblist-item span[title]',
+    '.joblist-item a[title]',
+    '.joblist-item div[title]',
+    'span[title]',
+    'a[title]'
+  ].join(',');
+  let count = 0;
+
+  for (const node of Array.from(document.querySelectorAll(selector))) {
+    const companyName = findCompanyNameForNode(node);
+    if (!companyName) continue;
+    markCompanyElement(node, companyName);
+    count += 1;
+  }
+
+  return count;
+}
+
+async function refreshAndApplyCompanyHighlights() {
+  try {
+    await refreshCompanyHighlightNames();
+    applyCompanyHighlights();
+  } catch (_) {
+    // Bridge may not be running yet; keep the page usable.
+  }
+}
+
+function startCompanyHighlighting() {
+  refreshAndApplyCompanyHighlights();
+  window.setTimeout(refreshAndApplyCompanyHighlights, 1200);
+  window.setInterval(refreshAndApplyCompanyHighlights, 15000);
+
+  if (!companyHighlightObserver) {
+    companyHighlightObserver = new MutationObserver(() => {
+      scheduleCompanyHighlight();
+    });
+    companyHighlightObserver.observe(document.documentElement || document.body, {
+      subtree: true,
+      childList: true
+    });
   }
 }
 
@@ -425,6 +525,7 @@ if (isApplyPage()) {
   setTimeout(() => ensureApplyCompanyButton(false), 1200);
 } else if (isSearchPage()) {
   ensureButtons();
+  startCompanyHighlighting();
   requestButtonInjection();
   setTimeout(requestButtonInjection, 1200);
   setTimeout(ensureButtons, 1200);
